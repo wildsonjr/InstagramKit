@@ -92,11 +92,8 @@ typedef enum
 + (NSDictionary*) sharedEngineConfiguration;
 
 @property (nonatomic, copy) InstagramLoginBlock instagramLoginBlock;
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-@property (nonatomic, strong) AFHTTPRequestOperationManager *httpManager;
-#else
-@property (nonatomic, strong) AFHTTPSessionManager *httpManager;
-#endif
+
+@property (nonatomic, strong) AFHTTPClient *httpManager;
 
 @end
 
@@ -134,12 +131,9 @@ typedef enum
         }
         
         NSAssert(url, @"Base URL not valid: %@", sharedEngineConfiguration[kInstagramKitBaseUrlConfigurationKey]);
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-        self.httpManager = [[AFHTTPRequestOperationManager alloc] initWithBaseURL:url];
-#else
-        self.httpManager = [[AFHTTPSessionManager alloc] initWithBaseURL:url];
-#endif
-
+        
+        self.httpManager = [AFHTTPClient clientWithBaseURL:url];
+        
         self.appClientID =  sharedEngineConfiguration[kInstagramKitAppClientIdConfigurationKey];
         self.appRedirectURL = sharedEngineConfiguration[kInstagramKitAppRedirectUrlConfigurationKey];
 
@@ -147,9 +141,7 @@ typedef enum
         self.authorizationURL = url ? url : kInstagramKitAuthorizationUrlDefault;
 
         mBackgroundQueue = dispatch_queue_create("background", NULL);
-
-        self.httpManager.responseSerializer = [[AFJSONResponseSerializer alloc] init];
-
+        
         BOOL validClientId = IKNotNull(self.appClientID) && ![self.appClientID isEqualToString:@""] && ![self.appClientID isEqualToString:@"<Client Id here>"];
         NSAssert(validClientId, @"Invalid Instagram Client ID.");
         NSAssert([NSURL URLWithString:self.appRedirectURL], @"App Redirect URL invalid: %@", self.appRedirectURL);
@@ -319,56 +311,58 @@ typedef enum
     }
     
     NSString *percentageEscapedPath = [path stringByAddingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
-
-    [self.httpManager GET:percentageEscapedPath
-        parameters:params
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-           success:^(AFHTTPRequestOperation *operation, id responseObject) {
-#else
-           success:^(NSURLSessionDataTask *task, id responseObject) {
-#endif
-               NSDictionary *responseDictionary = (NSDictionary *)responseObject;
-               NSDictionary *pInfo = responseDictionary[kPagination];
-               InstagramPaginationInfo *paginationInfo = (pInfo)?[[InstagramPaginationInfo alloc] initWithInfo:pInfo andObjectType:modelClass]: nil;
-               BOOL multiple = ([responseDictionary[kData] isKindOfClass:[NSArray class]]);
-               if (multiple) {
-                   NSArray *responseObjects = responseDictionary[kData];
-                   NSMutableArray*objects = [NSMutableArray arrayWithCapacity:responseObjects.count];
-                   dispatch_async(mBackgroundQueue, ^{
-                       if (modelClass) {
-                           for (NSDictionary *info in responseObjects) {
-                               id model = [[modelClass alloc] initWithInfo:info];
-                               [objects addObject:model];
-                           }
-                       }
-                       dispatch_async(dispatch_get_main_queue(), ^{
-                           success(objects, paginationInfo);
-                       });
-                   });
-               }
-               else {
-                   id model = nil;
-                   if (modelClass && IKNotNull(responseDictionary[kData]))
-                   {
-                       if (modelClass == [NSDictionary class]) {
-                           model = [[NSDictionary alloc] initWithDictionary:responseDictionary[kData]];
-                       }
-                       else
-                       {
-                           model = [[modelClass alloc] initWithInfo:responseDictionary[kData]];
-                       }
-                   }
-                   success(model, paginationInfo);
-               }
-           }
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-           failure:^(AFHTTPRequestOperation *operation, NSError *error) {
-               failure(error,[[operation response] statusCode]);
-#else
-           failure:^(NSURLSessionDataTask *task, NSError *error) {
-               failure(error,((NSHTTPURLResponse *)[task response]).statusCode);
-#endif
-           }];
+    
+    NSURLRequest *request;
+    request = [self.httpManager requestWithMethod:@"GET"
+                                             path:percentageEscapedPath
+                                       parameters:params];
+    
+    AFJSONRequestOperation *operation;
+    operation = [AFJSONRequestOperation JSONRequestOperationWithRequest:request
+                                                                success:
+                 ^(NSURLRequest *request, NSHTTPURLResponse *response, id responseObject)
+                 {
+                     NSDictionary *responseDictionary = (NSDictionary *)responseObject;
+                     NSDictionary *pInfo = responseDictionary[kPagination];
+                     InstagramPaginationInfo *paginationInfo = (pInfo)?[[InstagramPaginationInfo alloc] initWithInfo:pInfo andObjectType:modelClass]: nil;
+                     BOOL multiple = ([responseDictionary[kData] isKindOfClass:[NSArray class]]);
+                     if (multiple) {
+                         NSArray *responseObjects = responseDictionary[kData];
+                         NSMutableArray*objects = [NSMutableArray arrayWithCapacity:responseObjects.count];
+                         dispatch_async(mBackgroundQueue, ^{
+                             if (modelClass) {
+                                 for (NSDictionary *info in responseObjects) {
+                                     id model = [[modelClass alloc] initWithInfo:info];
+                                     [objects addObject:model];
+                                 }
+                             }
+                             dispatch_async(dispatch_get_main_queue(), ^{
+                                 success(objects, paginationInfo);
+                             });
+                         });
+                     }
+                     else {
+                         id model = nil;
+                         if (modelClass && IKNotNull(responseDictionary[kData]))
+                         {
+                             if (modelClass == [NSDictionary class]) {
+                                 model = [[NSDictionary alloc] initWithDictionary:responseDictionary[kData]];
+                             }
+                             else
+                             {
+                                 model = [[modelClass alloc] initWithInfo:responseDictionary[kData]];
+                             }
+                         }
+                         success(model, paginationInfo);
+                     }
+                 }
+                                                                failure:
+                 ^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error, id responseObject)
+                 {
+                     failure(error,response.statusCode);
+                 }];
+    
+    [operation start];
 }
 
 - (void)postPath:(NSString *)path
@@ -384,24 +378,26 @@ typedef enum
     else
         [params setObject:self.appClientID forKey:kKeyClientID];
     
-    [self.httpManager POST:path
-                    parameters:params
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-                       success:^(AFHTTPRequestOperation *operation, id responseObject) {
-#else
-                       success:^(NSURLSessionDataTask *task, id responseObject) {
-#endif
-                           NSDictionary *responseDictionary = (NSDictionary *)responseObject;
-                           success(responseDictionary);
-                       }
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-                       failure:^(AFHTTPRequestOperation *operation, NSError *error) {
-                           failure(error,[[operation response] statusCode]);
-#else
-                       failure:^(NSURLSessionDataTask *task, NSError *error) {
-                           failure(error,((NSHTTPURLResponse*)[task response]).statusCode);
-#endif
-                       }];
+    NSURLRequest *request;
+    request = [self.httpManager requestWithMethod:@"POST"
+                                             path:path
+                                       parameters:params];
+    
+    AFJSONRequestOperation *operation;
+    operation = [AFJSONRequestOperation JSONRequestOperationWithRequest:request
+                                                                success:
+                 ^(NSURLRequest *request, NSHTTPURLResponse *response, id responseObject)
+                 {
+                     NSDictionary *responseDictionary = (NSDictionary *)responseObject;
+                     success(responseDictionary);
+                 }
+                                                                failure:
+                 ^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error, id responseObject)
+                 {
+                     failure(error,response.statusCode);
+                 }];
+    
+    [operation start];
 }
 
 
@@ -417,28 +413,29 @@ typedef enum
     }
     else
         [params setObject:self.appClientID forKey:kKeyClientID];
-    [self.httpManager DELETE:path
-                  parameters:params
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-                     success:^(AFHTTPRequestOperation *operation, id responseObject) {
-#else
-                     success:^(NSURLSessionDataTask *task, id responseObject) {
-#endif
-                         if (success) {
-                             success();
-                         }
+    NSURLRequest *request;
+    request = [self.httpManager requestWithMethod:@"DELETE"
+                                             path:path
+                                       parameters:params];
+    
+    AFJSONRequestOperation *operation;
+    operation = [AFJSONRequestOperation JSONRequestOperationWithRequest:request
+                                                                success:
+                 ^(NSURLRequest *request, NSHTTPURLResponse *response, id responseObject)
+                 {
+                     if (success) {
+                         success();
                      }
-#if (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0)
-                     failure:^(AFHTTPRequestOperation *operation, NSError *error) {
-                         if (failure) {
+                 }
+                                                                failure:
+                 ^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error, id responseObject)
+                 {
+                     if (failure) {
                              failure(error,[[operation response] statusCode]);
-#else
-                     failure:^(NSURLSessionDataTask *task, NSError *error) {
-                         if (failure) {
-                             failure(error,((NSHTTPURLResponse*)[task response]).statusCode);
-#endif
-                         }
-                     }];
+                     }
+                 }];
+    
+    [operation start];
 }
 
 - (NSDictionary *)parametersFromCount:(NSInteger)count maxId:(NSString *)maxId andMaxIdType:(MaxIdKeyType)keyType
