@@ -6,7 +6,7 @@ Pod::Spec.new do |s|
   s.homepage      = 'https://github.com/wildsonjr/InstagramKit'
   s.license       = 'MIT'
   s.author        = { "Wildson Jr" => "wildsonjr@hotmail.com" }
-  s.platforms     = { :ios, '6.0' }
+  s.platforms     = { :ios => '6.0' }
   s.source        = { :git => "https://github.com/wildsonjr/InstagramKit.git" }
 
   s.source_files  = 'InstagramKit', 'InstagramKit/**/*.{h,m}'
